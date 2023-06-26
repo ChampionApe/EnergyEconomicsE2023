@@ -85,6 +85,9 @@ class lpBlock:
 			else:
 				f1, f2 = fIndex(varName, full.index.droplevel(list(set(pyDbs.getDomains(A))-onlyA)) ), fIndex(constrName, full.index.droplevel(list(onlyA)), btype=t)
 				full.index = pd.MultiIndex.from_arrays(np.concatenate([f1.to_frame(index=False).values, f2.to_frame(index=False)], axis=1).T, names = stdNames('v')+stdNames(t))
+			if full.index.to_frame(index=False).isna().any(None):
+				print(f"""Warning: The coefficient matrix 'A_{t}' for constraint '{constrName}' and variable '{varName}' includes nan indices. 
+	This is likely due to missing domains either in the relevant 'b_{t}' vector or the 'A_{t}'. """)
 		full.index._nA, full.index._nb = sorted(onlyA), sorted(pyDbs.getDomains(b))
 		self.compiled[f'A_{t}'][(constrName, varName)] = full
 

@@ -44,7 +44,7 @@ def practicalCapacityFactor(model):
 	return ( pyDbs.pdSum(model.db['Generation'], 'h')/ pdNonZero(pyDbs.pdSum(model.hourlyGeneratingCapacity, 'h')) ).dropna()
 
 def marginalSystemCosts(db):
-	return adj.rc_pd(db['λ_equilibrium'], alias={'h_alias':'h'}).droplevel('_type')
+	return adj.rc_pd(db['λ_equilibrium'], alias={'h_constr':'h'}).droplevel('_type')
 
 def meanMarginalSystemCost(db, var):
 	return pyDbs.pdSum( (var * marginalSystemCosts(db)) / pdNonZero(pyDbs.pdSum(var, 'h')), 'h')
@@ -62,7 +62,7 @@ def marginalEconomicValue(model):
 
 class mSimple(modelShell):
 	def __init__(self, db, blocks = None, **kwargs):
-		db.updateAlias(alias = [('h','h_alias')])
+		db.updateAlias(alias = [('h','h_constr')])
 		super().__init__(db, blocks = blocks, **kwargs)
 
 	@property
@@ -88,23 +88,24 @@ class mSimple(modelShell):
 	@property
 	def globalDomains(self):
 		return {'Generation': pd.MultiIndex.from_product([self.db['h'], self.db['id']]),
-				'HourlyDemand': self.db['h'],
-				'equilibrium': self.db['h_alias']}
+				'HourlyDemand': pyDbs.cartesianProductIndex([self.db['c'], self.db['h']]),
+				'equilibrium': self.db['h_constr']}
+
 	@property
 	def c(self):
 		return [{'varName': 'Generation', 'value': adjMultiIndex.bc(self.db['mc'], self.db['h'])},
-				{'varName': 'HourlyDemand', 'value': -self.db['MWP']}]
+				{'varName': 'HourlyDemand', 'value': -adjMultiIndex.bc(self.db['MWP'], self.globalDomains['HourlyDemand'])}]
 	@property
 	def u(self):
 		return [{'varName': 'Generation', 'value': self.hourlyGeneratingCapacity},
-				{'varName': 'HourlyDemand', 'value': self.hourlyLoad}]
+				{'varName': 'HourlyDemand', 'value': self.hourlyLoad_c}]
 	@property
 	def b_eq(self):
 		return [{'constrName': 'equilibrium'}]
 	@property
 	def A_eq(self):
-		return [{'constrName': 'equilibrium', 'varName': 'Generation', 'value': appIndexWithCopySeries(pd.Series(1, index = self.globalDomains['Generation']), 'h','h_alias')},
-				{'constrName': 'equilibrium', 'varName': 'HourlyDemand', 'value': appIndexWithCopySeries(pd.Series(-1, index = self.globalDomains['HourlyDemand']), 'h','h_alias')}]
+		return [{'constrName': 'equilibrium', 'varName': 'Generation', 'value': appIndexWithCopySeries(pd.Series(1, index = self.globalDomains['Generation']), 'h','h_constr')},
+				{'constrName': 'equilibrium', 'varName': 'HourlyDemand', 'value': appIndexWithCopySeries(pd.Series(-1, index = self.globalDomains['HourlyDemand']), 'h','h_constr')}]
 
 	def initBlocks(self, **kwargs):
 		[getattr(self.blocks, f'add_{t}')(**v) for t in _blocks if hasattr(self,t) for v in getattr(self,t)];
@@ -147,22 +148,3 @@ class mRES(mSimple):
 	def A_ub(self):
 		return [{'constrName': 'RESCapConstraint', 'varName': 'Generation', 'value': -1, 'conditions': self.cleanIds},
 				{'constrName': 'RESCapConstraint', 'varName': 'HourlyDemand', 'value': self.db['RESCap']}]
-
-class mMultipleConsumers(mSimple):
-	def __init__(self, db, blocks=None, **kwargs):
-		super().__init__(db, blocks=blocks, **kwargs)
-
-	@property
-	def globalDomains(self):
-		return {'Generation': pd.MultiIndex.from_product([self.db['h'], self.db['id']]),
-				'HourlyDemand': pyDbs.cartesianProductIndex([self.db['c'], self.db['h']]),
-				'equilibrium': self.db['h_alias']}
-
-	@property
-	def c(self):
-		return [{'varName': 'Generation', 'value': adjMultiIndex.bc(self.db['mc'], self.db['h'])},
-				{'varName': 'HourlyDemand', 'value': -adjMultiIndex.bc(self.db['MWP'], self.globalDomains['HourlyDemand'])}]
-	@property
-	def u(self):
-		return [{'varName': 'Generation', 'value': self.hourlyGeneratingCapacity},
-				{'varName': 'HourlyDemand', 'value': self.hourlyLoad_c}]

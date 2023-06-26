@@ -28,24 +28,25 @@ class mSimple(modelShell):
 
     @property
     def globalDomains(self):
-        return {'Generation': self.db['id']}
-
-    @property
-    def getLoad(self):
-        return sum(self.db['Load']) if is_iterable(self.db['Load']) else self.db['Load']
+        return {'Generation': self.db['id'],
+                'Demand': self.db['c']}
 
     @property
     def c(self):
-        return [{'varName': 'Generation', 'value': self.db['mc']}]
+        return [{'varName': 'Generation', 'value': self.db['mc']},
+                {'varName': 'Demand', 'value': -self.db['MWP']}]
     @property
     def u(self):
-        return [{'varName': 'Generation', 'value': self.db['GeneratingCapacity']}]
+        return [{'varName': 'Generation', 'value': self.db['GeneratingCapacity']},
+                {'varName': 'Demand', 'value': self.db['Load']}]
     @property
     def b_eq(self):
-        return [{'constrName': 'equilibrium', 'value': self.getLoad}]
+        return [{'constrName': 'equilibrium'}]
+
     @property
     def A_eq(self):
-        return [{'constrName': 'equilibrium', 'varName': 'Generation', 'value': 1}]
+        return [{'constrName': 'equilibrium', 'varName': 'Generation', 'value': 1},
+                {'constrName': 'equilibrium', 'varName': 'Demand', 'value': -1}]
 
     def initBlocks(self, **kwargs):
         [getattr(self.blocks, f'add_{t}')(**v) for t in _blocks if hasattr(self,t) for v in getattr(self,t)];
@@ -80,7 +81,8 @@ class mRES(mSimple):
         return s[s <= 0].index
     @property
     def b_ub(self):
-        return [{'constrName': 'RESCapConstraint', 'value': -self.db['RESCap']*self.getLoad}]
+        return [{'constrName': 'RESCapConstraint'}]
     @property
     def A_ub(self):
-        return [{'constrName': 'RESCapConstraint', 'varName': 'Generation', 'value': -1, 'conditions': self.cleanIds}]
+        return [{'constrName': 'RESCapConstraint', 'varName': 'Generation', 'value': -1, 'conditions': self.cleanIds},
+                {'constrName': 'RESCapConstraint', 'varName': 'Demand', 'value': self.db['RESCap']}]
