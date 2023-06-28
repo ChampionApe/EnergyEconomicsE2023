@@ -2,10 +2,6 @@ from base import *
 from lpCompiler import _blocks
 from lpModels import modelShell
 
-def adHocMerge(x,y):
-	return pd.merge(x.rename('x'), pd.Series(0, index = y).rename('y'), left_index = True, right_index = True).dropna().sum(axis=1)
-
-# Functions for all technology types:
 def fuelCost(db):
 	return db['FuelPrice'].add(pyDbs.pdSum(db['EmissionIntensity'] * db['EmissionTax'], 'EmissionType'), fill_value=0)
 
@@ -14,8 +10,8 @@ def mc(db):
 	return pyDbs.pdSum((db['FuelMix'] * fuelCost(db)).dropna(), 'BFt').add(db['OtherMC'], fill_value=0)
 
 def fuelConsumption(db):
-	return pyDbs.pdSum((db['FuelMix'] * (subsetIdsTech(db['Generation_E'], ('standard_E','BP'), db).add(
-								  subsetIdsTech(db['Generation_H'], 'standard_H', db), fill_value = 0))).dropna(), ['h','id'])
+	return pyDbs.pdSum((db['FuelMix'] * (adjMultiIndex.applyMult(subsetIdsTech(db['Generation_E'], ('Standard (E)','Backpressure'), db), db['g_E2g']).droplevel('g_E').add(
+										 adjMultiIndex.applyMult(subsetIdsTech(db['Generation_H'], 'Standard (H)', db), db['g_H2g']).droplevel('g_H'), fill_value = 0))).dropna(), ['h','id'])
 
 def plantEmissionIntensity(db):
 	return pyDbs.pdSum(db['FuelMix'] * db['EmissionIntensity'], 'BFt')
@@ -23,11 +19,20 @@ def plantEmissionIntensity(db):
 def emissionsFuel(db):
 	return pyDbs.pdSum(fuelConsumption(db) * db['EmissionIntensity'], 'BFt')
 
+def theoreticalCapacityFactor(db):
+	return pyDbs.pdSum((subsetIdsTech(db['Generation_E'], ('Standard (E)','Backpressure'), db) / pdNonZero(len(db['h']) * db['GeneratingCap_E'])).dropna(), 'h').droplevel('g_E')
+
 def marginalSystemCosts(db,market):
-	return -adj.rc_AdjPd(db[f'λ_equilibrium_{market}'], alias={'h_alias':'h', 'g_alias2': 'g'}).droplevel('_type')
+	return -adj.rc_AdjPd(db[f'λ_equilibrium_{market}'], alias={'h_constr':'h', f'g_{market}_constr': f'g_{market}'}).droplevel('_type')
 
 def meanMarginalSystemCost(db, var, market):
 	return pyDbs.pdSum( (var * marginalSystemCosts(db,market)) / pdNonZero(pyDbs.pdSum(var, 'h')), 'h')
+
+def marginalEconomicValue(m):
+	""" Defines over id """
+	return pd.Series.combine_first( subsetIdsTech(-pyDbs.pdSum((m.db['λ_Generation_E'].xs('u',level='_type')  * m.hourlyCapFactors).dropna(), 'h').add( 1000 * m.db['FOM'] * len(m.db['h'])/8760, fill_value = 0).droplevel('g_E'),('Standard (E)','Backpressure'), m.db),
+									subsetIdsTech(-pyDbs.pdSum((m.db['λ_Generation_H'].xs('u',level='_type')  * m.hourlyCapFactors).dropna(), 'h').add( 1000 * m.db['FOM'] * len(m.db['h'])/8760, fill_value = 0).droplevel('g_H'),('Standard (H)','Heat pump'), m.db)
+									)
 
 def getTechs(techs, db):
 	""" Subset on tech types"""
@@ -48,37 +53,40 @@ class mSimple(modelShell):
 		(1) Electricity and heat markets, 
 		(2) multiple geographic areas, 
 		(3) trade in electricity, 
-		(4) intermittency in generation, 
+s		(4) intermittency in generation, 
 		(5) CHP plants and heat pumps """
 	def __init__(self, db, blocks = None, **kwargs):
-		db.updateAlias(alias=[('h','h_alias'), ('g','g_alias'),('g','g_alias2'),('id','id_alias')])
+		db.updateAlias(alias=[(k, k+'_constr') for k in ('h','g_E','g_H','g','id')]+[(k, k+'_alias') for k in ['g_E']])
 		db['gConnected'] = db['lineCapacity'].index
 		db['id2modelTech2tech'] = sortAll(adjMultiIndex.bc(pd.Series(0, index = db['id2tech']), db['tech2modelTech'])).index
 		super().__init__(db, blocks=blocks, **kwargs)
 
+	def mapToG(self, symbol, market, alias = None):
+		return adjMultiIndex.applyMult(symbol, adj.rc_pd(self.db[f'g_{market}2g'], alias = alias))
+
 	@property
 	def modelTech_E(self):
-		return ('standard_E','BP','HP')
+		return ('Standard (E)','Backpressure','Heat pump')
 	@property
 	def modelTech_H(self):
-		return ('standard_H','BP','HP')
+		return ('Standard (H)','Backpressure','Heat pump')
 	@property
 	def hourlyCapFactors(self):
 		return adjMultiIndex.bc(self.db['CapVariation'], self.db['id2hvt']).droplevel('hvt')
 	@property
 	def hourlyGeneratingCap_E(self):
 		return subsetIdsTech( (adjMultiIndex.bc(self.db['GeneratingCap_E'], self.db['id2hvt']) * self.db['CapVariation']).dropna().droplevel('hvt'),
-								('standard_E','BP'), self.db)
+								('Standard (E)','Backpressure'), self.db)
 	@property
 	def hourlyGeneratingCap_H(self):
 		return subsetIdsTech( (adjMultiIndex.bc(self.db['GeneratingCap_H'], self.db['id2hvt']) * self.db['CapVariation']).dropna().droplevel('hvt'),
-								('standard_H','HP'), self.db)
+								('Standard (H)','Heat pump'), self.db)
 	@property
 	def hourlyLoad_cE(self):
-		return adjMultiIndex.bc(self.db['Load_E'] * self.db['LoadVariation_E'], self.db['c_E2g']).reorder_levels(['c_E','g','h'])
+		return adjMultiIndex.bc(self.db['Load_E'] * self.db['LoadVariation_E'], self.db['c_E2g_E']).reorder_levels(['c_E','g_E','h'])
 	@property
 	def hourlyLoad_cH(self):
-		return adjMultiIndex.bc(self.db['Load_H'] * self.db['LoadVariation_H'], self.db['c_H2g']).reorder_levels(['c_H','g','h'])
+		return adjMultiIndex.bc(self.db['Load_H'] * self.db['LoadVariation_H'], self.db['c_H2g_H']).reorder_levels(['c_H','g_H','h'])
 	@property
 	def hourlyLoad_E(self):
 		return pyDbs.pdSum(self.hourlyLoad_cE, 'c_E')
@@ -92,71 +100,73 @@ class mSimple(modelShell):
 
 	@property
 	def globalDomains(self):
-		return {'Generation_E': pyDbs.cartesianProductIndex([subsetIdsTech(self.db['id2g'], self.modelTech_E, self.db), self.db['h']]), 
-				'Generation_H': pyDbs.cartesianProductIndex([subsetIdsTech(self.db['id2g'], self.modelTech_H, self.db), self.db['h']]),
-				'GeneratingCap_E': getTechs(['standard_E','BP'], self.db),
-				'GeneratingCap_H': getTechs(['standard_H','HP'], self.db),
-				'HourlyDemand_E': pd.MultiIndex.from_product([self.db['g'], self.db['h']]),
-				'HourlyDemand_H': pd.MultiIndex.from_product([self.db['g'], self.db['h']]),
+		return {'Generation_E': pyDbs.cartesianProductIndex([subsetIdsTech(self.db['id2g_E'], self.modelTech_E, self.db), self.db['h']]),
+				'Generation_H': pyDbs.cartesianProductIndex([subsetIdsTech(self.db['id2g_H'], self.modelTech_H, self.db), self.db['h']]),
+				'GeneratingCap_E': getTechs(['Standard (E)','Backpressure'], self.db),
+				'GeneratingCap_H': getTechs(['Standard (H)','Heat pump'], self.db),
+				'HourlyDemand_E': pyDbs.cartesianProductIndex([self.db['c_E2g_E'], self.db['h']]),
+				'HourlyDemand_H': pyDbs.cartesianProductIndex([self.db['c_H2g_H'], self.db['h']]),
 				'Transmission_E': pyDbs.cartesianProductIndex([self.db['gConnected'],self.db['h']]),
-				'equilibrium_E': pd.MultiIndex.from_product([self.db['g_alias2'], self.db['h_alias']]),
-				'equilibrium_H': pd.MultiIndex.from_product([self.db['g_alias2'], self.db['h_alias']]),
-				'PowerToHeat': pyDbs.cartesianProductIndex([adj.rc_AdjPd(getTechs(['BP','HP'],self.db), alias = {'id':'id_alias'}), self.db['h_alias']]),
-				'ECapConstr': pyDbs.cartesianProductIndex([adj.rc_AdjPd(adj.rc_pd(self.db['id2g'], getTechs(['standard_E','BP'],self.db)), alias = {'id':'id_alias','g':'g_alias'}), self.db['h_alias']]),
-				'HCapConstr': pyDbs.cartesianProductIndex([adj.rc_AdjPd(adj.rc_pd(self.db['id2g'], getTechs(['standard_H','HP'],self.db)), alias = {'id':'id_alias','g':'g_alias'}), self.db['h_alias']]),
-				'TechCapConstr_E': self.db['TechCap_E'].index,
-				'TechCapConstr_H': self.db['TechCap_H'].index}
+				'equilibrium_E': pd.MultiIndex.from_product([self.db['g_E_constr'], self.db['h_constr']]),
+				'equilibrium_H': pd.MultiIndex.from_product([self.db['g_H_constr'], self.db['h_constr']]),
+				'PowerToHeat': pyDbs.cartesianProductIndex([adj.rc_pd(getTechs(['Backpressure','Heat pump'],self.db), alias = {'id':'id_constr'}), self.db['h_constr']]),
+				'ECapConstr' : pyDbs.cartesianProductIndex([adj.rc_pd(adj.rc_pd(self.db['id2g_E'], getTechs(['Standard (E)','Backpressure'], self.db)), alias = {'id':'id_constr', 'g_E':'g_E_constr'}), self.db['h_constr']]),
+				'HCapConstr' : pyDbs.cartesianProductIndex([adj.rc_pd(adj.rc_pd(self.db['id2g_H'], getTechs(['Standard (H)','Heat pump'], self.db)), alias = {'id':'id_constr', 'g_H':'g_H_constr'}), self.db['h_constr']]),
+				'TechCapConstr_E': adj.rc_pd(self.db['TechCap_E'].index, alias = {'g_E': 'g_E_constr'}),
+				'TechCapConstr_H': adj.rc_pd(self.db['TechCap_H'].index, alias = {'g_H': 'g_H_constr'})}
 
 	def initBlocks(self, **kwargs):
 		[getattr(self.blocks, f'add_{t}')(**v) for t in _blocks if hasattr(self,t) for v in getattr(self,t)];
 
 	@property
 	def c(self):
-		return [{'varName': 'Generation_E', 'value': adjMultiIndex.bc(self.db['mc'], self.globalDomains['Generation_E']), 'conditions': getTechs(['standard_E','BP'],self.db)},
-				{'varName': 'Generation_H', 'value': adjMultiIndex.bc(self.db['mc'], self.globalDomains['Generation_H']), 'conditions': getTechs(['standard_H','HP'],self.db)},
-				{'varName': 'HourlyDemand_E', 'value': -adjMultiIndex.bc(self.db['MWP_E'], self.globalDomains['HourlyDemand_E'])},
-				{'varName': 'HourlyDemand_H', 'value': -adjMultiIndex.bc(self.db['MWP_H'], self.globalDomains['HourlyDemand_H'])},
-				{'varName': 'Transmission_E', 'value': adjMultiIndex.bc(self.db['lineMC'], self.db['h'])},
-				{'varName': 'GeneratingCap_E', 'value': adjMultiIndex.bc(self.db['InvestCost_A'], self.db['id2tech']).droplevel('tech').add(self.db['FOM'],fill_value=0)*1000*len(self.db['h'])/8760, 'conditions': getTechs(['standard_E','BP'], self.db)},
-				{'varName': 'GeneratingCap_H', 'value': adjMultiIndex.bc(self.db['InvestCost_A'], self.db['id2tech']).droplevel('tech').add(self.db['FOM'],fill_value=0)*1000*len(self.db['h'])/8760, 'conditions': getTechs(['standard_H','HP'], self.db)}]
-
+		return [{'varName': 'Generation_E', 'value': adjMultiIndex.bc(self.db['mc'], self.globalDomains['Generation_E']), 'conditions': getTechs(['Standard (E)','Backpressure'],self.db)},
+				{'varName': 'Generation_H', 'value': adjMultiIndex.bc(self.db['mc'], self.globalDomains['Generation_H']), 'conditions': getTechs(['Standard (H)','Heat pump'],self.db)},
+				{'varName': 'HourlyDemand_E','value':-adjMultiIndex.bc(self.db['MWP_E'], self.globalDomains['HourlyDemand_E'])},
+				{'varName': 'HourlyDemand_H','value':-adjMultiIndex.bc(self.db['MWP_H'], self.globalDomains['HourlyDemand_H'])},
+				{'varName': 'Transmission_E','value': adjMultiIndex.bc(self.db['lineMC'], self.db['h'])},
+				{'varName': 'GeneratingCap_E', 'value': adjMultiIndex.bc(self.db['InvestCost_A'], self.db['id2tech']).droplevel('tech').add(self.db['FOM'],fill_value=0)*1000*len(self.db['h'])/8760, 'conditions': getTechs(['Standard (E)','Backpressure'], self.db)},
+				{'varName': 'GeneratingCap_H', 'value': adjMultiIndex.bc(self.db['InvestCost_A'], self.db['id2tech']).droplevel('tech').add(self.db['FOM'],fill_value=0)*1000*len(self.db['h'])/8760, 'conditions': getTechs(['Standard (H)','Heat pump'], self.db)}]
 	@property
 	def u(self):
-		return [{'varName': 'HourlyDemand_E', 'value': self.hourlyLoad_E},
-				{'varName': 'HourlyDemand_H', 'value': self.hourlyLoad_H},
+		return [{'varName': 'HourlyDemand_E','value':self.hourlyLoad_cE},
+				{'varName': 'HourlyDemand_H','value':self.hourlyLoad_cH},
 				{'varName': 'Transmission_E', 'value': adjMultiIndex.bc(self.db['lineCapacity'], self.db['h'])}]
 	@property
 	def l(self):
-		return [{'varName': 'Generation_E', 'value': -np.inf, 'conditions': getTechs('HP',self.db)}]
+		return [{'varName': 'Generation_E', 'value': -np.inf, 'conditions': getTechs('Heat pump',self.db)}]
 	@property
 	def b_eq(self):
 		return [{'constrName': 'PowerToHeat'}]
 	@property
 	def A_eq(self):
-		return [{'constrName': 'PowerToHeat', 'varName': 'Generation_E', 'value': appIndexWithCopySeries(pd.Series(1, index = self.globalDomains['Generation_E']), ['id','h'], ['id_alias','h_alias']), 'conditions': getTechs(['BP','HP'],self.db)},
-				{'constrName': 'PowerToHeat', 'varName': 'Generation_H', 'value': appIndexWithCopySeries(adjMultiIndex.bc(-self.db['E2H'], self.globalDomains['Generation_H']), ['id','h'],['id_alias','h_alias']), 'conditions': getTechs(['BP','HP'],self.db)}]
+		return [{'constrName': 'PowerToHeat', 'varName': 'Generation_E', 'value': appIndexWithCopySeries(pd.Series(1, index = self.globalDomains['Generation_E']), ['id','h'], ['id_constr','h_constr']), 'conditions': getTechs(['Backpressure','Heat pump'],self.db)},
+				{'constrName': 'PowerToHeat', 'varName': 'Generation_H', 'value': appIndexWithCopySeries(adjMultiIndex.bc(-self.db['E2H'], self.globalDomains['Generation_H']), ['id','h'],['id_constr','h_constr']), 'conditions': getTechs(['Backpressure','Heat pump'],self.db)}]
+
 	@property
 	def b_ub(self):
 		return [{'constrName': 'equilibrium_E'}, 
 				{'constrName':'equilibrium_H'}, 
 				{'constrName': 'ECapConstr'}, 
 				{'constrName': 'HCapConstr'}, 
-				{'constrName': 'TechCapConstr_E', 'value': self.db['TechCap_E']},
-				{'constrName': 'TechCapConstr_H', 'value': self.db['TechCap_H']}]
+				{'constrName': 'TechCapConstr_E', 'value': adj.rc_pd(self.db['TechCap_E'], alias = {'g_E': 'g_E_constr'})},
+				{'constrName': 'TechCapConstr_H', 'value': adj.rc_pd(self.db['TechCap_H'], alias = {'g_H': 'g_H_constr'})}]
+
 	@property
 	def A_ub(self):
-		return [{'constrName': 'equilibrium_E', 'varName': 'Generation_E', 'value': appIndexWithCopySeries(pd.Series(-1, index = self.globalDomains['Generation_E']), ['g','h'],['g_alias2','h_alias'])},
-				{'constrName': 'equilibrium_E', 'varName': 'HourlyDemand_E','value':appIndexWithCopySeries(pd.Series(1, index = self.globalDomains['HourlyDemand_E']), ['g','h'],['g_alias2','h_alias'])},
-				{'constrName': 'equilibrium_E', 'varName': 'Transmission_E','value': [appIndexWithCopySeries(pd.Series(1, index = self.globalDomains['Transmission_E']), ['g','h'],['g_alias2','h_alias']),
-																					  appIndexWithCopySeries(pd.Series(self.db['lineLoss']-1, index = self.globalDomains['Transmission_E']), ['g_alias','h'], ['g_alias2','h_alias'])]},
-				{'constrName': 'equilibrium_H', 'varName': 'Generation_H', 'value': appIndexWithCopySeries(pd.Series(-1, index = self.globalDomains['Generation_H']), ['g','h'],['g_alias2','h_alias'])},
-				{'constrName': 'equilibrium_H', 'varName': 'HourlyDemand_H','value':appIndexWithCopySeries(pd.Series(1, index = self.globalDomains['HourlyDemand_H']), ['g','h'],['g_alias2','h_alias'])},
-				{'constrName': 'ECapConstr', 'varName': 'Generation_E', 'value': appIndexWithCopySeries(pd.Series(1, index = subsetIdsTech(self.globalDomains['Generation_E'], ['standard_E','BP'],self.db)), ['g','h','id'], ['g_alias','h_alias','id_alias'])},
-				{'constrName': 'ECapConstr', 'varName': 'GeneratingCap_E', 'value': -appIndexWithCopySeries(adj.rc_AdjPd(subsetIdsTech(adjMultiIndex.bc(self.hourlyCapFactors, self.db['id2g']), ['standard_E','BP'],self.db), alias = {'h':'h_alias', 'g':'g_alias'}), 'id','id_alias')},
-				{'constrName': 'HCapConstr', 'varName': 'Generation_H', 'value': appIndexWithCopySeries(pd.Series(1, index = subsetIdsTech(self.globalDomains['Generation_H'], ['standard_H','HP'],self.db)), ['g','h','id'], ['g_alias','h_alias','id_alias'])},
-				{'constrName': 'HCapConstr', 'varName': 'GeneratingCap_H', 'value': -appIndexWithCopySeries(adj.rc_AdjPd(subsetIdsTech(adjMultiIndex.bc(self.hourlyCapFactors, self.db['id2g']), ['standard_H','HP'],self.db), alias = {'h':'h_alias', 'g':'g_alias'}), 'id','id_alias')},
-				{'constrName': 'TechCapConstr_E', 'varName': 'GeneratingCap_E', 'value': adHocMerge(adjMultiIndex.bc(1, self.db['id2tech']), self.db['id2g']), 'conditions': getTechs(['standard_E','BP'],self.db)},
-				{'constrName': 'TechCapConstr_H', 'varName': 'GeneratingCap_H', 'value': adHocMerge(adjMultiIndex.bc(1, self.db['id2tech']), self.db['id2g']), 'conditions': getTechs(['standard_H','HP'],self.db)}]
+		return [{'constrName': 'equilibrium_E', 'varName': 'Generation_E', 'value': appIndexWithCopySeries(pd.Series(-1, index = self.globalDomains['Generation_E']), ['g_E','h'],['g_E_constr','h_constr'])},
+				{'constrName': 'equilibrium_E', 'varName': 'HourlyDemand_E','value':appIndexWithCopySeries(pd.Series(1, index = self.globalDomains['HourlyDemand_E']), ['g_E','h'],['g_E_constr','h_constr'])},
+				{'constrName': 'equilibrium_E', 'varName': 'Transmission_E','value': [appIndexWithCopySeries(pd.Series(1, index = self.globalDomains['Transmission_E']), ['g_E','h'],['g_E_constr','h_constr']),
+																					  appIndexWithCopySeries(pd.Series(self.db['lineLoss']-1, index = self.globalDomains['Transmission_E']), ['g_E_alias','h'], ['g_E_constr','h_constr'])]},
+				{'constrName': 'equilibrium_H', 'varName': 'Generation_H', 'value': appIndexWithCopySeries(pd.Series(-1, index = self.globalDomains['Generation_H']), ['g_H','h'],['g_H_constr','h_constr'])},
+				{'constrName': 'equilibrium_H', 'varName': 'HourlyDemand_H','value':appIndexWithCopySeries(pd.Series(1, index = self.globalDomains['HourlyDemand_H']), ['g_H','h'],['g_H_constr','h_constr'])},
+				{'constrName': 'ECapConstr', 'varName': 'Generation_E', 'value': appIndexWithCopySeries(pd.Series(1, index = subsetIdsTech(self.globalDomains['Generation_E'], ['Standard (E)', 'Backpressure'], self.db)), ['g_E','h','id'], ['g_E_constr', 'h_constr','id_constr'])},
+				{'constrName': 'ECapConstr', 'varName': 'GeneratingCap_E', 'value': -appIndexWithCopySeries(adj.rc_pd(subsetIdsTech(adjMultiIndex.bc(self.hourlyCapFactors, self.db['id2g_E']), ['Standard (E)','Backpressure'],self.db), alias = {'h':'h_constr', 'g_E':'g_E_constr'}), 'id', 'id_constr')},
+				{'constrName': 'TechCapConstr_E', 'varName': 'GeneratingCap_E', 'value': adj.rc_pd(reduce(adjMultiIndex.applyMult, [pd.Series(1, index = self.globalDomains['GeneratingCap_E']), self.db['id2tech'], self.db['id2g_E']]), alias = {'g_E':'g_E_constr'})},
+				{'constrName': 'HCapConstr', 'varName': 'Generation_H', 'value': appIndexWithCopySeries(pd.Series(1, index = subsetIdsTech(self.globalDomains['Generation_H'], ['Standard (H)', 'Heat pump'], self.db)), ['g_H','h','id'], ['g_H_constr', 'h_constr','id_constr'])},
+				{'constrName': 'HCapConstr', 'varName': 'GeneratingCap_H', 'value': -appIndexWithCopySeries(adj.rc_pd(subsetIdsTech(adjMultiIndex.bc(self.hourlyCapFactors, self.db['id2g_H']), ['Standard (H)','Heat pump'],self.db), alias = {'h':'h_constr', 'g_H':'g_H_constr'}), 'id', 'id_constr')},
+				{'constrName': 'TechCapConstr_H', 'varName': 'GeneratingCap_H', 'value': adj.rc_pd(reduce(adjMultiIndex.applyMult, [pd.Series(1, index = self.globalDomains['GeneratingCap_H']), self.db['id2tech'], self.db['id2g_H']]), alias = {'g_H':'g_H_constr'})}]
+
 
 	def postSolve(self, solution, **kwargs):
 		if solution['status'] == 0:
@@ -166,24 +176,9 @@ class mSimple(modelShell):
 			self.db['Emissions'] = emissionsFuel(self.db)
 			self.db['marginalSystemCosts_E'] = marginalSystemCosts(self.db, 'E')
 			self.db['marginalSystemCosts_H'] = marginalSystemCosts(self.db, 'H')
+			self.db['marginalEconomicValue'] = marginalEconomicValue(self)
 			self.db['meanConsumerPrice_E'] = meanMarginalSystemCost(self.db, self.db['HourlyDemand_E'],'E')
 			self.db['meanConsumerPrice_H'] = meanMarginalSystemCost(self.db, self.db['HourlyDemand_H'],'H')
-
-	def decomposeWelfare(self):
-		x = {k: getattr(self, k) for k in ('consumerSurplus_E','consumerSurplus_H','producerRevenue','shortRunCosts','longRunCosts','tradeSurplus')}
-		return {**x, **{'producerSurplus': x['producerRevenue']-(x['shortRunCosts'])-x['longRunCosts']}}
-
-	def adjustMWP(self, x='E'):
-		return self.db[f'MWP_{x}'] if database.type_(self.db[f'MWP_{x}']) == 'scalar' else applyMult(self.db[f'MWP_{x}'], self.db[f'c_{x}2g'])
-	@property
-	def consumerSurplus_E(self):
-		return pyDbs.pdSum((self.db['HourlyDemand_E'] * (self.adjustMWP(x='E')-self.db['marginalSystemCosts_E'])), 'h')
-	@property
-	def consumerSurplus_H(self):
-		return pyDbs.pdSum((self.db['HourlyDemand_H'] * (self.adjustMWP(x='H')-self.db['marginalSystemCosts_H'])), 'h')
-	@property
-	def producerRevenue(self):
-		return ((self.db['Generation_E'] * self.db['marginalSystemCosts_E']).add( self.db['Generation_H'] * self.db['marginalSystemCosts_H'], fill_value=0)).groupby('id').sum()
 
 class mEmissionCap(mSimple):
 	def __init__(self, db, blocks = None, commonCap = True, **kwargs):
@@ -192,17 +187,16 @@ class mEmissionCap(mSimple):
 
 	@property
 	def b_ub(self):
-		return super().b_ub + [{'constrName': 'emissionsCap', 'value': pyDbs.pdSum(self.db['CO2Cap'],'g') if self.commonCap else adj.rc_pd(self.db['CO2Cap'], alias = {'g': 'g_alias'})}]
+		return super().b_ub + [{'constrName': 'emissionsCap', 'value': pyDbs.pdSum(self.db['CO2Cap'],'g') if self.commonCap else adj.rc_pd(self.db['CO2Cap'], alias = {'g': 'g_constr'})}]
 
 	@property
 	def A_ub(self):
 		if self.commonCap:
-			return super().A_ub + [{'constrName': 'emissionsCap', 'varName': 'Generation_E', 'value': adjMultiIndex.bc(plantEmissionIntensity(self.db).xs('CO2',level='EmissionType'), self.globalDomains['Generation_E']), 'conditions': getTechs(['standard_E','BP'],self.db)},
-								   {'constrName': 'emissionsCap', 'varName': 'Generation_H', 'value': adjMultiIndex.bc(plantEmissionIntensity(self.db).xs('CO2',level='EmissionType'), self.globalDomains['Generation_H']), 'conditions': getTechs('standard_H',self.db)}]
+			return super().A_ub + [{'constrName': 'emissionsCap', 'varName': 'Generation_E', 'value': adjMultiIndex.bc(plantEmissionIntensity(self.db).xs('CO2',level='EmissionType'), self.globalDomains['Generation_E']), 'conditions': getTechs(['Standard (E)','Backpressure'],self.db)},
+								   {'constrName': 'emissionsCap', 'varName': 'Generation_H', 'value': adjMultiIndex.bc(plantEmissionIntensity(self.db).xs('CO2',level='EmissionType'), self.globalDomains['Generation_H']), 'conditions': getTechs('Standard (H)',self.db)}]
 		else:
-			return super().A_ub + [{'constrName': 'emissionsCap', 'varName': 'Generation_E', 'value': appIndexWithCopySeries(adjMultiIndex.bc(plantEmissionIntensity(self.db).xs('CO2',level='EmissionType'), self.globalDomains['Generation_E']),'g','g_alias'), 'conditions': getTechs(['standard_E','BP'],self.db)},
-								   {'constrName': 'emissionsCap', 'varName': 'Generation_H', 'value': appIndexWithCopySeries(adjMultiIndex.bc(plantEmissionIntensity(self.db).xs('CO2',level='EmissionType'), self.globalDomains['Generation_H']),'g','g_alias'), 'conditions': getTechs('standard_H',self.db)}]
-
+			return super().A_ub + [{'constrName': 'emissionsCap', 'varName': 'Generation_E', 'value': self.mapToG(adjMultiIndex.bc(plantEmissionIntensity(self.db).xs('CO2',level='EmissionType'), self.globalDomains['Generation_E']), 'E', alias = {'g':'g_constr'}), 'conditions': getTechs(['Standard (E)', 'Backpressure'], self.db)},
+								   {'constrName': 'emissionsCap', 'varName': 'Generation_H', 'value': self.mapToG(adjMultiIndex.bc(plantEmissionIntensity(self.db).xs('CO2',level='EmissionType'), self.globalDomains['Generation_H']), 'H', alias = {'g':'g_constr'}), 'conditions': getTechs('Standard (H)', self.db)}]
 
 class mRES(mSimple):
 	def __init__(self, db, blocks=None, commonCap = True, **kwargs):
@@ -216,45 +210,17 @@ class mRES(mSimple):
 
 	@property
 	def b_ub(self):
-		return super().b_ub + [{'constrName': 'RESCapConstraint', 'value': 0 if self.commonCap else adj.rc_pd(pd.Series(0, index = self.db['RESCap'].index), alias = {'g':'g_alias'})}]
+		return super().b_ub + [{'constrName': 'RESCapConstraint', 'value': 0 if self.commonCap else adj.rc_pd(pd.Series(0, index = self.db['RESCap'].index), alias = {'g':'g_constr'})}]
 
 	@property
 	def A_ub(self):
 		if self.commonCap:
-			return super().A_ub + [{'constrName': 'RESCapConstraint', 'varName': 'Generation_E', 'value': -1, 'conditions': ('and', [self.cleanIds, getTechs(['standard_E','BP'],self.db)])},
-								   {'constrName': 'RESCapConstraint', 'varName': 'Generation_H', 'value': -1, 'conditions': ('and', [self.cleanIds, getTechs(['standard_H','HP'],self.db)])},
+			return super().A_ub + [{'constrName': 'RESCapConstraint', 'varName': 'Generation_E', 'value': -1, 'conditions': ('and', [self.cleanIds, getTechs(['Standard (E)','Backpressure'],self.db)])},
+								   {'constrName': 'RESCapConstraint', 'varName': 'Generation_H', 'value': -1, 'conditions': ('and', [self.cleanIds, getTechs(['Standard (H)','Heat pump'],self.db)])},
 								   {'constrName': 'RESCapConstraint', 'varName': 'HourlyDemand_E','value': self.db['RESCap'].mean()},
 								   {'constrName': 'RESCapConstraint', 'varName': 'HourlyDemand_H','value': self.db['RESCap'].mean()}]
 		else:
-			return super().A_ub + [{'constrName': 'RESCapConstraint', 'varName': 'Generation_E', 'value': appIndexWithCopySeries(pd.Series(-1, index = self.globalDomains['Generation_E']), 'g','g_alias'), 'conditions': ('and', [self.cleanIds, getTechs(['standard_E','BP'],self.db)])},
-								   {'constrName': 'RESCapConstraint', 'varName': 'Generation_H', 'value': appIndexWithCopySeries(pd.Series(-1, index = self.globalDomains['Generation_H']), 'g','g_alias'), 'conditions': ('and', [self.cleanIds, getTechs(['standard_H','HP'],self.db)])},
-								   {'constrName': 'RESCapConstraint', 'varName': 'HourlyDemand_E', 'value': appIndexWithCopySeries(adjMultiIndex.bc(self.db['RESCap'], self.globalDomains['HourlyDemand_E']), 'g', 'g_alias')},
-								   {'constrName': 'RESCapConstraint', 'varName': 'HourlyDemand_H', 'value': appIndexWithCopySeries(adjMultiIndex.bc(self.db['RESCap'], self.globalDomains['HourlyDemand_H']), 'g', 'g_alias')}]
-
-
-class mMultipleConsumers(mSimple):
-	def __init__(self, db, blocks=None, **kwargs):
-		super().__init__(db, blocks=blocks, **kwargs)
-
-	@property
-	def globalDomains(self):
-		return {'Generation_E': pyDbs.cartesianProductIndex([subsetIdsTech(self.db['id2g'], self.modelTech_E, self.db), self.db['h']]), 
-				'Generation_H': pyDbs.cartesianProductIndex([subsetIdsTech(self.db['id2g'], self.modelTech_H, self.db), self.db['h']]),
-				'GeneratingCap_E': getTechs(['standard_E','BP'], self.db),
-				'GeneratingCap_H': getTechs(['standard_H','HP'], self.db),
-				'HourlyDemand_E': pyDbs.cartesianProductIndex([self.db['c_E2g'], self.db['h']]),
-				'HourlyDemand_H': pyDbs.cartesianProductIndex([self.db['c_H2g'], self.db['h']]),
-				'Transmission_E': pyDbs.cartesianProductIndex([self.db['gConnected'],self.db['h']]),
-				'equilibrium_E': pd.MultiIndex.from_product([self.db['g_alias2'], self.db['h_alias']]),
-				'equilibrium_H': pd.MultiIndex.from_product([self.db['g_alias2'], self.db['h_alias']]),
-				'PowerToHeat': pyDbs.cartesianProductIndex([adj.rc_AdjPd(getTechs(['BP','HP'],self.db), alias = {'id':'id_alias'}), self.db['h_alias']]),
-				'ECapConstr': pyDbs.cartesianProductIndex([adj.rc_AdjPd(adj.rc_pd(self.db['id2g'], getTechs(['standard_E','BP'],self.db)), alias = {'id':'id_alias','g':'g_alias'}), self.db['h_alias']]),
-				'HCapConstr': pyDbs.cartesianProductIndex([adj.rc_AdjPd(adj.rc_pd(self.db['id2g'], getTechs(['standard_H','HP'],self.db)), alias = {'id':'id_alias','g':'g_alias'}), self.db['h_alias']]),
-				'TechCapConstr_E': self.db['TechCap_E'].index,
-				'TechCapConstr_H': self.db['TechCap_H'].index}
-
-	@property
-	def u(self):
-		return [{'varName': 'HourlyDemand_E', 'value': self.hourlyLoad_cE},
-				{'varName': 'HourlyDemand_H', 'value': self.hourlyLoad_cH},
-				{'varName': 'Transmission_E', 'value': adjMultiIndex.bc(self.db['lineCapacity'], self.db['h'])}]
+			return super().A_ub + [{'constrName': 'RESCapConstraint', 'varName': 'Generation_E',  'value': self.mapToG(pd.Series(-1, index = self.globalDomains['Generation_E']), 'E', alias = {'g':'g_constr'}), 'conditions': ('and', [self.cleanIds, getTechs(['z (E)','Backpressure'],self.db)])},
+								   {'constrName': 'RESCapConstraint', 'varName': 'Generation_H',  'value': self.mapToG(pd.Series(-1, index = self.globalDomains['Generation_H']), 'H', alias = {'g':'g_constr'}), 'conditions': ('and', [self.cleanIds, getTechs(['Standard (H)','Heat pump'],self.db)])},
+								   {'constrName': 'RESCapConstraint', 'varName': 'HourlyDemand_E','value': adj.rc_pd(self.mapToG(pd.Series(1, index = self.globalDomains['HourlyDemand_E']), 'E') * self.db['RESCap'], alias = {'g':'g_constr'})},
+								   {'constrName': 'RESCapConstraint', 'varName': 'HourlyDemand_H','value': adj.rc_pd(self.mapToG(pd.Series(1, index = self.globalDomains['HourlyDemand_H']), 'H') * self.db['RESCap'], alias = {'g':'g_constr'})}]
