@@ -21,6 +21,10 @@ class modelShell:
 			print(f"Solution status {sol['status']}: {sol['message']}")
 		self.postSolve(sol, **noneInit(postKwargs, {}))
 
+	def postSolve(self, solution, **kwargs):
+		if solution['status'] == 0:
+			self.unloadToDb(solution)
+
 	def unloadSolution(self, sol):
 		fullVector = pd.Series(sol['x'], index=self.blocks.globalVariableIndex)
 		return {k: vIndexVariable(fullVector, k, v) for k, v in self.blocks.alldomains.items()}
