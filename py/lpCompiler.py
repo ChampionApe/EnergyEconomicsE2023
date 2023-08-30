@@ -173,7 +173,6 @@ class lpBlock:
 	def lp_b_ub(self):
 		return self.denseArgs['b_ub'].values if self.allconstr['ub'] else None
 
-
 	# CHECKING LOWER/UPPER BOUNDS: Returns index where lower and upper bounds are equal.
 	# In these instances, the solver does not distinguish between the two, and may ascribe the dual variable to either.
 	# The following two functions ascribe the dual variable to the UPPER bound, if the two bounds are the same (scalar bounds)
@@ -182,10 +181,6 @@ class lpBlock:
 
 	def scalarDualUpper(self, sol):
 		return np.where(self.lp_bounds[:,0]==self.lp_bounds[:,1], np.add(sol['lower']['marginals'], sol['upper']['marginals']), sol['upper']['marginals'])
-
-	# # Get dual solutions:
-	# def dual_solution(self, sol, scalarDual = True):
-	# 	return pd.Series(self.dual_solutionValues(sol, scalarDual=scalarDual), index = self.dual_solutionIndex)
 
 	@property
 	def dualIndex(self):
