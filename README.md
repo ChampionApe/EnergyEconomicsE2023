@@ -9,5 +9,6 @@ The models require installation of Python (e.g. through Anaconda), some type of 
 * Also from "Anaconda Prompt" ("Terminal" for Mac): ```pip install seaborn pyDbs```.
 
 If you already have some of these packages installed, you might need to update them. In particular, you'll need:
- * pandas version >=1.3.1 
- * scipy version >=1.8.0
+ * pandas version >=1.5.1 
+ * scipy version >=1.10.0
+If you have existing projects that may require older versions of these packages, you should instead create a virtual environment with the new versions. 
