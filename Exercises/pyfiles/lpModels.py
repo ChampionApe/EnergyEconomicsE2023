@@ -1,17 +1,6 @@
 from base import *
 from scipy import optimize
-import itertools
 import lpCompiler
-
-def loopxs(x, l, loopName):
-    return x.xs(l, level=loopName) if isinstance(x.index, pd.MultiIndex) else x[l]
-
-def updateFromGrids(db, grids, loop, l):
-    [db.addOrMerge(g.name, loopxs(g, l, loop.name), priority='second')
-     for g in grids]
-
-def readSolutionLoop(sol, loop, i, extract, db):
-	return pd.concat(sol[i:len(loop)*len(extract):len(extract)], axis=1).set_axis(loop, axis=1).stack() if isinstance(db[extract[i]], pd.Series) else pd.Series(sol[i:len(loop)*len(extract):len(extract)], index=loop)
 
 class modelShell:
 	def __init__(self, db, blocks=None, method = 'highs', scalarDualAtUpper = True, computeDual = True, standardSolve = None, **kwargs):
@@ -54,17 +43,3 @@ class modelShell:
 		[self.db.__setitem__(k, v) for k, v in self.unloadSolution(sol).items()]
 		if self.computeDual:
 			[self.db.__setitem__(k,v) for k,v in self.unloadDualSolution(sol).items()];
-
-	def loopSolveExtract(self, loop, grids, extract, preSolve=None, initBlocks=None, postSolve=None, printSol=False):
-		""" Update exogenous parameters in loop, solve, and extract selected variables """
-		n = list(itertools.chain.from_iterable((self.loopSolveExtract_l(loop, grids, extract, l, preSolve = preSolve, initBlocks = initBlocks, postSolve = postSolve, printSol = printSol) for l in loop)))
-		return {extract[i]: readSolutionLoop(n, loop, i, extract, self.db) for i in range(len(extract))}
-	
-	def loopSolveExtract_l(self, loop, grids, extract, l, preSolve=None, initBlocks=None, postSolve=None, printSol=False):
-		updateFromGrids(self.db, grids, loop, l)
-		if hasattr(self, 'preSolve'):
-			self.preSolve(**noneInit(preSolve, {}))
-		self.initBlocks(**noneInit(initBlocks, {}))
-		self.solve(preSolve=preSolve, initBlocks=initBlocks,
-                   postSolve=postSolve, printSol=printSol)
-		return [self.db[k] for k in extract]
