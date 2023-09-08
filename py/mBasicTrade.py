@@ -43,7 +43,7 @@ def practicalCapacityFactor(model):
 	return ( pyDbs.pdSum(model.db['Generation'], 'h')/ pdNonZero(pyDbs.pdSum(model.hourlyGeneratingCapacity, 'h')) ).dropna().droplevel('g')
 
 def marginalSystemCosts(db):
-	return adj.rc_pd(db['λ_equilibrium'], alias={'h_alias':'h', 'g_alias2': 'g'}).droplevel('_type')
+	return adj.rc_pd(db['λ_equilibrium'], alias={'h_constr':'h', 'g_constr': 'g'}).droplevel('_type')
 
 def meanMarginalSystemCost(db, var):
 	return pyDbs.pdSum( (var * marginalSystemCosts(db)) / pdNonZero(pyDbs.pdSum(var, 'h')), 'h')
@@ -68,7 +68,7 @@ def congestionRent(db):
 
 class mSimple(modelShell):
 	def __init__(self, db, blocks=None, **kwargs):
-		db.updateAlias(alias=[('h','h_alias'), ('g','g_alias'),('g','g_alias2')])
+		db.updateAlias(alias=[('h','h_constr'), ('g','g_alias'),('g','g_constr')])
 		db['gConnected'] = db['lineCapacity'].index
 		super().__init__(db, blocks=blocks, **kwargs)
 
@@ -95,8 +95,8 @@ class mSimple(modelShell):
 	@property
 	def globalDomains(self):
 		return {'Generation': pyDbs.cartesianProductIndex([self.db['id2g'], self.db['h']]),
-				'HourlyDemand': pd.MultiIndex.from_product([self.db['g'], self.db['h']]),
-				'equilibrium': pd.MultiIndex.from_product([self.db['g_alias2'], self.db['h_alias']]),
+				'HourlyDemand': pyDbs.cartesianProductIndex([self.db['c2g'], self.db['h']]),
+				'equilibrium': pd.MultiIndex.from_product([self.db['g_constr'], self.db['h_constr']]),
 				'Transmission': pyDbs.cartesianProductIndex([self.db['gConnected'],self.db['h']])}
 
 	def initBlocks(self, **kwargs):
@@ -105,22 +105,22 @@ class mSimple(modelShell):
 	@property
 	def c(self):
 		return [{'varName': 'Generation', 'value': adjMultiIndex.bc(self.db['mc'], self.globalDomains['Generation'])},
-				{'varName': 'HourlyDemand', 'value': -self.db['MWP']},
+				{'varName': 'HourlyDemand', 'value': -adjMultiIndex.bc(self.db['MWP'], self.globalDomains['HourlyDemand'])},
 				{'varName': 'Transmission', 'value': adjMultiIndex.bc(self.db['lineMC'], self.db['h'])}]
 	@property
 	def u(self):
 		return [{'varName': 'Generation', 'value': adjMultiIndex.bc(self.hourlyGeneratingCapacity, self.globalDomains['Generation'])},
-				{'varName': 'HourlyDemand', 'value': self.hourlyLoad},
+				{'varName': 'HourlyDemand', 'value': self.hourlyLoad_c},
 				{'varName': 'Transmission', 'value': adjMultiIndex.bc(self.db['lineCapacity'], self.db['h'])}]
 	@property
 	def b_eq(self):
 		return [{'constrName': 'equilibrium'}]
 	@property
 	def A_eq(self):
-		return [{'constrName': 'equilibrium', 'varName': 'Generation', 'value': appIndexWithCopySeries(pd.Series(1, index = self.globalDomains['Generation']), ['g','h'],['g_alias2','h_alias'])},
-				{'constrName': 'equilibrium', 'varName': 'HourlyDemand', 'value': appIndexWithCopySeries(pd.Series(-1, index = self.globalDomains['HourlyDemand']), ['g','h'],['g_alias2','h_alias'])},
-				{'constrName': 'equilibrium', 'varName': 'Transmission', 'value': [appIndexWithCopySeries(pd.Series(-1, index = self.globalDomains['Transmission']), ['g','h'],['g_alias2','h_alias']),
-																				   appIndexWithCopySeries(pd.Series(1-self.db['lineLoss'], index = self.globalDomains['Transmission']), ['g_alias','h'], ['g_alias2','h_alias'])]}]
+		return [{'constrName': 'equilibrium', 'varName': 'Generation', 'value': appIndexWithCopySeries(pd.Series(1, index = self.globalDomains['Generation']), ['g','h'],['g_constr','h_constr'])},
+				{'constrName': 'equilibrium', 'varName': 'HourlyDemand', 'value': appIndexWithCopySeries(pd.Series(-1, index = self.globalDomains['HourlyDemand']), ['g','h'],['g_constr','h_constr'])},
+				{'constrName': 'equilibrium', 'varName': 'Transmission', 'value': [appIndexWithCopySeries(pd.Series(-1, index = self.globalDomains['Transmission']), ['g','h'],['g_constr','h_constr']),
+																				   appIndexWithCopySeries(pd.Series(1-self.db['lineLoss'], index = self.globalDomains['Transmission']), ['g_alias','h'], ['g_constr','h_constr'])]}]
 	def postSolve(self, solution, **kwargs):
 		if solution['status'] == 0:
 			self.unloadToDb(solution)
@@ -143,12 +143,12 @@ class mEmissionCap(mSimple):
 
 	@property
 	def b_ub(self):
-		return [{'constrName': 'emissionsCap', 'value': pyDbs.pdSum(self.db['CO2Cap'], 'g') if self.commonCap else adj.rc_pd(self.db['CO2Cap'], alias = {'g':'g_alias'})}]
+		return [{'constrName': 'emissionsCap', 'value': pyDbs.pdSum(self.db['CO2Cap'], 'g') if self.commonCap else adj.rc_pd(self.db['CO2Cap'], alias = {'g':'g_constr'})}]
 
 	@property
 	def A_ub(self):
 		return [{'constrName': 'emissionsCap', 'varName': 'Generation', 
-		'value': adjMultiIndex.bc(plantEmissionIntensity(self.db).xs('CO2',level = 'EmissionType'), self.globalDomains['Generation']) if self.commonCap else appIndexWithCopySeries(adjMultiIndex.bc(plantEmissionIntensity(self.db).xs('CO2',level='EmissionType'), self.globalDomains['Generation']),'g','g_alias')}]
+		'value': adjMultiIndex.bc(plantEmissionIntensity(self.db).xs('CO2',level = 'EmissionType'), self.globalDomains['Generation']) if self.commonCap else appIndexWithCopySeries(adjMultiIndex.bc(plantEmissionIntensity(self.db).xs('CO2',level='EmissionType'), self.globalDomains['Generation']),'g','g_constr')}]
 
 class mRES(mSimple):
 	def __init__(self, db, blocks=None, commonCap = True, **kwargs):
@@ -162,7 +162,7 @@ class mRES(mSimple):
 
 	@property
 	def b_ub(self):
-		return [{'constrName': 'RESCapConstraint', 'value': 0 if self.commonCap else adj.rc_pd(pd.Series(0, index = self.db['RESCap'].index), alias = {'g':'g_alias'})}]
+		return [{'constrName': 'RESCapConstraint', 'value': 0 if self.commonCap else adj.rc_pd(pd.Series(0, index = self.db['RESCap'].index), alias = {'g':'g_constr'})}]
 
 	@property
 	def A_ub(self):
@@ -170,5 +170,5 @@ class mRES(mSimple):
 			return [{'constrName': 'RESCapConstraint', 'varName': 'Generation', 'value': -1, 'conditions': self.cleanIds},
 					{'constrName': 'RESCapConstraint', 'varName': 'HourlyDemand', 'value': self.db['RESCap'].mean()}]
 		else:
-			return [{'constrName': 'RESCapConstraint', 'varName': 'Generation', 'value': appIndexWithCopySeries(pd.Series(-1, index = self.globalDomains['Generation']), 'g','g_alias'), 'conditions': self.cleanIds},
-					{'constrName': 'RESCapConstraint', 'varName': 'HourlyDemand', 'value': appIndexWithCopySeries(adjMultiIndex.bc(self.db['RESCap'], self.globalDomains['HourlyDemand']), 'g', 'g_alias')}]
+			return [{'constrName': 'RESCapConstraint', 'varName': 'Generation', 'value': appIndexWithCopySeries(pd.Series(-1, index = self.globalDomains['Generation']), 'g','g_constr'), 'conditions': self.cleanIds},
+					{'constrName': 'RESCapConstraint', 'varName': 'HourlyDemand', 'value': appIndexWithCopySeries(adjMultiIndex.bc(self.db['RESCap'], self.globalDomains['HourlyDemand']), 'g', 'g_constr')}]

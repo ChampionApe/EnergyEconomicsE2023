@@ -61,9 +61,9 @@ def marginalEconomicValue(model):
 	return - pyDbs.pdSum(model.db['λ_Generation'].xs('u',level='_type') * model.hourlyCapFactors, 'h').add( 1000 * model.db['FOM'] * len(model.db['h'])/8760, fill_value = 0)
 
 class mSimple(modelShell):
-	def __init__(self, db, blocks = None, **kwargs):
-		db.updateAlias(alias = [('h','h_constr')])
-		super().__init__(db, blocks = blocks, **kwargs)
+	def __init__(self, db, blocks=None, **kwargs):
+		db.updateAlias(alias=[('h','h_constr'),('id','id_constr')])
+		super().__init__(db, blocks=blocks, **kwargs)
 
 	@property
 	def hourlyGeneratingCapacity(self):
@@ -88,24 +88,41 @@ class mSimple(modelShell):
 	@property
 	def globalDomains(self):
 		return {'Generation': pd.MultiIndex.from_product([self.db['h'], self.db['id']]),
+				'GeneratingCapacity': self.db['id'],
 				'HourlyDemand': pyDbs.cartesianProductIndex([self.db['c'], self.db['h']]),
-				'equilibrium': self.db['h_constr']}
+				'equilibrium': self.db['h_constr'],
+				'ECapConstr': pd.MultiIndex.from_product([self.db['h_constr'], self.db['id_constr']]),
+				'TechCapConstr': self.db['TechCap'].index}
 
 	@property
 	def c(self):
 		return [{'varName': 'Generation', 'value': adjMultiIndex.bc(self.db['mc'], self.db['h'])},
-				{'varName': 'HourlyDemand', 'value': -adjMultiIndex.bc(self.db['MWP'], self.globalDomains['HourlyDemand'])}]
+				{'varName': 'HourlyDemand', 'value': -adjMultiIndex.bc(self.db['MWP'], self.globalDomains['HourlyDemand'])},
+				{'varName': 'GeneratingCapacity','value': adjMultiIndex.bc(self.db['InvestCost_A'], self.db['id2tech']).droplevel('tech').add(self.db['FOM'],fill_value=0)*1000*len(self.db['h'])/8760}]
+
 	@property
 	def u(self):
-		return [{'varName': 'Generation', 'value': self.hourlyGeneratingCapacity},
-				{'varName': 'HourlyDemand', 'value': self.hourlyLoad_c}]
+		return [{'varName': 'HourlyDemand', 'value': self.hourlyLoad_c}]
+
+
 	@property
 	def b_eq(self):
 		return [{'constrName': 'equilibrium'}]
+
 	@property
 	def A_eq(self):
 		return [{'constrName': 'equilibrium', 'varName': 'Generation', 'value': appIndexWithCopySeries(pd.Series(1, index = self.globalDomains['Generation']), 'h','h_constr')},
 				{'constrName': 'equilibrium', 'varName': 'HourlyDemand', 'value': appIndexWithCopySeries(pd.Series(-1, index = self.globalDomains['HourlyDemand']), 'h','h_constr')}]
+
+	@property
+	def b_ub(self):
+		return [{'constrName': 'ECapConstr'}, {'constrName': 'TechCapConstr', 'value': self.db['TechCap']}]
+
+	@property
+	def A_ub(self):
+		return [{'constrName': 'ECapConstr', 'varName': 'Generation', 'value': appIndexWithCopySeries(pd.Series(1, index = self.globalDomains['Generation']), ['h','id'], ['h_constr','id_constr'])},
+				{'constrName': 'ECapConstr', 'varName': 'GeneratingCapacity', 'value': -appIndexWithCopySeries(adj.rc_pd(self.hourlyCapFactors, alias = {'h':'h_constr'}), 'id','id_constr')},
+				{'constrName': 'TechCapConstr', 'varName': 'GeneratingCapacity', 'value': adjMultiIndex.applyMult(pd.Series(1, index = self.globalDomains['GeneratingCapacity']), self.db['id2tech'])}]
 
 	def initBlocks(self, **kwargs):
 		[getattr(self.blocks, f'add_{t}')(**v) for t in _blocks if hasattr(self,t) for v in getattr(self,t)];
@@ -113,24 +130,22 @@ class mSimple(modelShell):
 	def postSolve(self, solution, **kwargs):
 		if solution['status'] == 0:
 			self.unloadToDb(solution)
-			self.db['Welfare'] = -solution['fun']
+			self.db['SystemCosts'] = solution['fun']
 			self.db['FuelConsumption'] = fuelConsumption(self.db)
 			self.db['Emissions'] = emissionsFuel(self.db)
-			self.db['capacityFactor'] = theoreticalCapacityFactor(self.db)
-			self.db['capacityCosts'] = averageCapacityCosts(self.db)
-			self.db['energyCosts'] = averageEnergyCosts(self.db)
-			self.db['marginalSystemCosts'] = marginalSystemCosts(self.db)
-			self.db['marginalEconomicValue'] = marginalEconomicValue(self)
+
 
 class mEmissionCap(mSimple):
 	def __init__(self, db, blocks=None, **kwargs):
 		super().__init__(db, blocks=blocks, **kwargs)
+
 	@property
 	def b_ub(self):
-		return [{'constrName': 'emissionsCap', 'value': self.db['CO2Cap']}]
+		return super().b_ub + [{'constrName': 'emissionsCap', 'value': self.db['CO2Cap']}]
 	@property
 	def A_ub(self):
-		return [{'constrName': 'emissionsCap', 'varName': 'Generation', 'value': adjMultiIndex.bc(plantEmissionIntensity(self.db).xs('CO2',level='EmissionType'), self.db['h'])}]
+		return super().A_ub + [{'constrName': 'emissionsCap', 'varName': 'Generation', 'value': adjMultiIndex.bc(plantEmissionIntensity(self.db).xs('CO2',level='EmissionType'), self.db['h'])}]
+
 
 class mRES(mSimple):
 	def __init__(self, db, blocks=None, **kwargs):
@@ -140,11 +155,10 @@ class mRES(mSimple):
 	def cleanIds(self):
 		s = (self.db['FuelMix'] * self.db['EmissionIntensity']).groupby('id').sum()
 		return s[s <= 0].index
-
 	@property
 	def b_ub(self):
-		return [{'constrName': 'RESCapConstraint'}]
+		return super().b_ub + [{'constrName': 'RESCapConstraint'}]
 	@property
 	def A_ub(self):
-		return [{'constrName': 'RESCapConstraint', 'varName': 'Generation', 'value': -1, 'conditions': self.cleanIds},
-				{'constrName': 'RESCapConstraint', 'varName': 'HourlyDemand', 'value': self.db['RESCap']}]
+		return super().A_ub + [{'constrName': 'RESCapConstraint', 'varName': 'Generation', 'value': -1, 'conditions': self.cleanIds},
+							   {'constrName': 'RESCapConstraint', 'varName': 'HourlyDemand', 'value': self.db['RESCap']}]

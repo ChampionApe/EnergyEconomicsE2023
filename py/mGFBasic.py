@@ -2,6 +2,9 @@ from base import *
 from lpCompiler import _blocks
 from lpModels import modelShell
 
+def adHocMerge(x,y):
+	return pd.merge(x.rename('x'), pd.Series(0, index = y).rename('y'), left_index = True, right_index = True).dropna().sum(axis=1)
+
 # A few basic functions for the energy models:
 def fuelCost(db):
 	return db['FuelPrice'].add(pyDbs.pdSum(db['EmissionIntensity'] * db['EmissionTax'], 'EmissionType'), fill_value=0)
@@ -20,6 +23,7 @@ def plantEmissionIntensity(db):
 
 class mSimple(modelShell):
 	def __init__(self, db, blocks=None, **kwargs):
+		db.updateAlias(alias=[('id','id_constr')])
 		super().__init__(db, blocks=blocks, **kwargs)
 
 	def preSolve(self, recomputeMC=False, **kwargs):
@@ -29,16 +33,20 @@ class mSimple(modelShell):
 	@property
 	def globalDomains(self):
 		return {'Generation': self.db['id'],
-				'Demand': self.db['c']}
+				'GeneratingCapacity': self.db['id'],
+				'Demand': self.db['c'],
+				'ECapConstr': self.db['id_constr'],
+				'TechCapConstr': self.db['TechCap'].index}
 
 	@property
 	def c(self):
 		return [{'varName': 'Generation', 'value': self.db['mc']},
-				{'varName': 'Demand', 'value': -self.db['MWP']}]
+				{'varName': 'Demand', 'value': -self.db['MWP']},
+				{'varName': 'GeneratingCapacity','value': adjMultiIndex.bc(self.db['InvestCost_A'], self.db['id2tech']).droplevel('tech').add(self.db['FOM'],fill_value=0)}]
 	@property
 	def u(self):
-		return [{'varName': 'Generation', 'value': self.db['GeneratingCapacity']},
-				{'varName': 'Demand', 'value': self.db['Load']}]
+		return [{'varName': 'Demand', 'value': self.db['Load']}]
+
 	@property
 	def b_eq(self):
 		return [{'constrName': 'equilibrium'}]
@@ -47,6 +55,17 @@ class mSimple(modelShell):
 	def A_eq(self):
 		return [{'constrName': 'equilibrium', 'varName': 'Generation', 'value': 1},
 				{'constrName': 'equilibrium', 'varName': 'Demand', 'value': -1}]
+
+	@property
+	def b_ub(self):
+		return [{'constrName': 'ECapConstr'}, {'constrName': 'TechCapConstr', 'value': self.db['TechCap']}]
+
+	@property
+	def A_ub(self):
+		return [{'constrName': 'ECapConstr', 'varName': 'Generation', 'value': appIndexWithCopySeries(pd.Series(1, index = self.globalDomains['Generation']), 'id','id_constr')},
+				{'constrName': 'ECapConstr', 'varName': 'GeneratingCapacity', 'value': -appIndexWithCopySeries(pd.Series(1, index = self.globalDomains['GeneratingCapacity']), 'id','id_constr')},
+				{'constrName': 'TechCapConstr', 'varName': 'GeneratingCapacity', 'value': adjMultiIndex.bc(pd.Series(1, index = self.globalDomains['GeneratingCapacity']), self.db['id2tech'])}]
+
 
 	def initBlocks(self, **kwargs):
 		[getattr(self.blocks, f'add_{t}')(**v) for t in _blocks if hasattr(self,t) for v in getattr(self,t)];
@@ -65,10 +84,10 @@ class mEmissionCap(mSimple):
 
 	@property
 	def b_ub(self):
-		return [{'constrName': 'emissionsCap', 'value': self.db['CO2Cap']}]
+		return super().b_ub + [{'constrName': 'emissionsCap', 'value': self.db['CO2Cap']}]
 	@property
 	def A_ub(self):
-		return [{'constrName': 'emissionsCap', 'varName': 'Generation', 'value': plantEmissionIntensity(self.db)}]
+		return super().A_ub + [{'constrName': 'emissionsCap', 'varName': 'Generation', 'value': plantEmissionIntensity(self.db)}]
 
 
 class mRES(mSimple):
@@ -81,8 +100,8 @@ class mRES(mSimple):
 		return s[s <= 0].index
 	@property
 	def b_ub(self):
-		return [{'constrName': 'RESCapConstraint'}]
+		return super().b_ub + [{'constrName': 'RESCapConstraint'}]
 	@property
 	def A_ub(self):
-		return [{'constrName': 'RESCapConstraint', 'varName': 'Generation', 'value': -1, 'conditions': self.cleanIds},
-				{'constrName': 'RESCapConstraint', 'varName': 'Demand', 'value': self.db['RESCap']}]
+		return super().A_ub + [{'constrName': 'RESCapConstraint', 'varName': 'Generation', 'value': -1, 'conditions': self.cleanIds},
+							   {'constrName': 'RESCapConstraint', 'varName': 'Demand', 'value': self.db['RESCap']}]
