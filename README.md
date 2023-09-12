@@ -12,9 +12,9 @@ There has been more technical issues with the installation guide than anticipate
   ![](screenDump2.png)
 
 ### Opening/runnning exercises
-The steps above installs what is called a virtual environment on your computer called ```EE2023```; this is a specific copy of your Python installation that has specific versions of relevant packages installed. Now, everytime you work in this course, you do the following:
-* Open Anaconda Prompt (or Terminal for Mac) and add ```conda activate EE2023```. Then, you can open e.g. the Jupyter Lab that exercises are written in by calling  ```jupyter lab```. *Note: You have to keep this prompt/terminal open as long as you work in your notebook.*
-  ![](screenDump3.png)
+The steps above install what is called a virtual environment on your computer called ```EE2023```; this is a specific copy of your Python installation that has specific versions of relevant packages installed. Now, everytime you work in this course, do the following: Open Anaconda Prompt (or Terminal for Mac) and add ```conda activate EE2023```. Then, you can open e.g. the Jupyter Lab that exercises are written in by calling  ```jupyter lab```.
+![](screenDump3.png)
+*Note: You have to keep this prompt/terminal open as long as you work in your notebook.*
 
 ## Installation guide (Old)
 The models require installation of Python (e.g. through Anaconda), some type of git tool (e.g. Github Desktop, Git, Tortoise), and an editor for python code (e.g. VSCode or Sublime). The course *Introduction to Programming and Numerical Analysis* provides some pretty detailed guides for setting up Python and VSCode: https://numeconcopenhagen.netlify.app/guides/. We do, however, rely on different packages in this course, so you will need to supplement the installation with a few extra steps.
