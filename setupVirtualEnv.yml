@@ -1,0 +1,14 @@
+name: EE2023
+channels:
+  - defaults
+dependencies:
+  - python = 3.11.3
+  - pip = 23.1.2
+  - jupyterlab = 3.6.3
+  - nodejs
+  - pandas = 1.5.3
+  - openpyxl = 3.0.10
+  - scipy = 1.10.1
+  - pip:
+    - seaborn == 0.12.2
+    - pyDbs == 0.0.1
