@@ -21,7 +21,8 @@ def emissionsFuel(db):
 
 class customModel(modelShell):
 	def __init__(self, db, blocks = None, **kwargs):
-		db.updateAlias(alias = [('h','h_constr')])
+		db.updateAlias(alias = [('h','h_constr'),
+								('id','id_constr')])
 		super().__init__(db, blocks = blocks, **kwargs)
 
 	@property
