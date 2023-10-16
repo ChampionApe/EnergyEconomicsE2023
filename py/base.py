@@ -98,15 +98,21 @@ def appendIndexWithCopy(index, copyLevel, newLevel):
 	else: 
 		return pd.MultiIndex.from_frame(index.to_frame(index=False).assign(**{newLevel: index.get_level_values(copyLevel)}))
 
-def rollLevelS(s, level, offset):
-	s.index = rollLevel(s.index, level, offset)
+def rollLevelS(s, level, offset, order = None):
+	s.index = rollLevel(s.index, level, offset, order = order)
 	return s
 
-def rollLevel(index, level, offset):
+def rollLevel(index, level, offset, order = None):
 	if is_iterable(level):
-		return index.set_levels([np.roll(index.levels[index.names.index(level[i])],offset[i]) for i in range(len(level))], level = level)
+		if order is not None:
+			return index.set_levels([index.levels[index.names.index(level[i])].map(_offsetMap(order[i], offset[i])) for i in range(len(level))], level = level)
+		else:
+			return index.set_levels([np.roll(index.levels[index.names.index(level[i])],offset[i]) for i in range(len(level))], level = level)
 	else:
-		return index.set_levels(np.roll(index.levels[index.names.index(level)], offset), level = level)
+		if order is not None:
+			return index.set_levels(index.levels[index.names.index(level)].map(_offsetMap(order, offset)), level = level)
+		else:
+			return index.set_levels(np.roll(index.levels[index.names.index(level)], offset), level = level)
 
 def offsetLevelS(s, level, offset):
 	s.index = offsetLevel(s.index, level, offset)
@@ -117,6 +123,9 @@ def offsetLevel(index, level, offset):
 		return index.set_levels([index.levels[index.names.index(level[i])]+offset[i] for i in range(len(level))], level = level)
 	else:
 		return index.set_levels(index.levels[index.names.index(level)]+offset, level = level)
+
+def _offsetMap(index, offset):
+	return pd.Series(np.roll(index, offset), index = index)
 
 def pdNonZero(x):
 	return x.where(x!=0)

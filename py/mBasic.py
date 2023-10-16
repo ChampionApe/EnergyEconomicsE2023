@@ -54,7 +54,7 @@ class mSimple(modelShell):
 	def postSolve(self, solution, **kwargs):
 		if solution['status'] == 0:
 			self.unloadToDb(solution)
-			self.db['SystemCosts'] = solution['fun']
+			self.db['Welfare'] = -solution['fun']
 			self.db['FuelConsumption'] = fuelConsumption(self.db)
 			self.db['Emissions'] = emissionsFuel(self.db)
 
