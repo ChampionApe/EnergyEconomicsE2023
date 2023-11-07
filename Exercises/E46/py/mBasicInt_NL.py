@@ -9,7 +9,7 @@ from baseSparse import *
 os.chdir(curr)
 from scipy.stats import norm
 from scipy.optimize import fsolve, minimize
-from scipy import sparse
+from scipy import sparse, linalg
 import numpy as np
 import warnings
 
@@ -21,22 +21,23 @@ class WritePropertyError(Exception):
 
 class mSimpleNL(): 
 	def __init__(self, db):
-		mSimpleNL.updateDB(db)
-		self.db = db
+		self.db = db.copy()
+		mSimpleNL.updateDB(self.db)
 		self.endo_vars = {'endo_var':['p'],'theta_var':[]}
 		self.idx_endo = {'p': range(0,len(self.db['h']))} 		
 		self.set_model_structure()
 		self.set_model_parameters()
 
-###########################################
-# Initialize class
-###########################################
+	###########################################
+	# Initialize class
+	###########################################
 
 	@staticmethod
 	def updateDB(db):
 		""" Function for initializing model database """
 		db.updateAlias(alias = [('h','h_alias')])
-		db.__setitem__('sigma',2); 						# Here we include a smoothing parameter as a scalar, but this could also be a scalar.
+		db.__setitem__('sigma_E',2); 						# Here we include a smoothing parameter as a scalar, but this could also be a scalar.
+		db.__setitem__('sigma_L',2);						# Here we include a smoothing parameter as a scalar, but this could also be a scalar.
 		db['p'] = pd.Series(0,index=db['h'],name='p')		# Here we initialize the price vector
 
 	def set_model_parameters(self):
@@ -45,7 +46,7 @@ class mSimpleNL():
 		self._hourlyDemand_c = (self.db['LoadVariation'] * self.db['Load']).astype(float)
 		self._Demand = self.hourlyDemand_c.groupby('h').sum()
 		self._fuelCost = self.db['FuelPrice'].add(pyDbs.pdSum(self.db['EmissionIntensity'] * self.db['EmissionTax'], 'EmissionType'), fill_value=0).astype(float)
-		self._averageMC = (pyDbs.pdSum((self.db['FuelMix'] * self.fuelCost).dropna(), 'BFt') + self.db['OtherMC']).astype(float)
+		self._averageMC = self.db['OtherMC'].add((pyDbs.pdSum((self.db['FuelMix'] * self.fuelCost).dropna(), 'BFt')),fill_value=0).astype(float)
 	
 	def set_model_structure(self):
 		""" This is a function loading in multiple read model properties """
@@ -53,10 +54,10 @@ class mSimpleNL():
 		self._id2h = (adjMultiIndex.bc(self.db['GeneratingCapacity'], self.db['id2hvt']) * self.db['CapVariation']).dropna().droplevel('hvt').index
 
 		
-###########################################
-# Set the parameters of the model 
-# independent of the market equilibrium
-###########################################
+	###########################################
+	# Set the parameters of the model 
+	# independent of the market equilibrium
+	###########################################
 
 	@property
 	def hourlyGeneratingCapacity(self):
@@ -105,10 +106,10 @@ class mSimpleNL():
 		self._averageMC = series
 
 
-###########################################
-# Set the indices of the model, 
-# determined by the data
-###########################################
+	###########################################
+	# Set the indices of the model, 
+	# determined by the data
+	###########################################
 
 	@property 
 	def H(self):
@@ -126,73 +127,64 @@ class mSimpleNL():
 	def id2h(self,series):
 		raise WritePropertyError('The mapping between id and h is always given by the hourly generating capacity.')
 
-###########################################
-# Function for updating variables post
-# simulations
-###########################################
+	###########################################
+	# Function for updating variables post
+	# simulations
+	###########################################
 
 	def unloadSolutionToDB(self,roots):
 		""" Returns af pandas series of x_vars in model database, when model is solved """
-		[self.db.__setitem__(i,pd.Series(roots[self.idx_endo[i]],index=self.db[i].index,name=i)) for i in self.idx_endo.keys() if i in self.endo_vars['x_vars']];
-
-	def postSolve(self):
-		""" Define some variables to be saved post solution to the model. """
-		self.db['hourlyGeneration'] = self.HourlyGeneration(self.x)
+		[self.db.__setitem__(i,pd.Series(roots[self.idx_endo[i]],index=self.db[i].index,name=i)) if pyDbs.type_(self.db[i])=='variable' else self.db.__setitem__(i,roots[self.idx_endo[i]]) if pyDbs.type_(self.db[i])=='scalar' else None for i in self.endo_vars['endo_var']+self.endo_vars['theta_var']];
 
 
-###########################################
-# Function for changing endogenous numpy 
-# array to pandas series
-###########################################
+	###########################################
+	# Function for changing endogenous numpy 
+	# array to pandas series
+	###########################################
 
 	def xArray2pdSeries(self,x,variable='p'):
 		""" Method for transforming endogenous variables from a numpy array to an indexed Pandas Series """
-		return pd.Series(x[self.idx_endo[variable]],index=self.db[variable].index,name=variable) if variable in self.idx_endo.keys() else self.db[variable]
+		if variable in self.endo_vars['endo_var']+self.endo_vars['theta_var']:
+			return pd.Series(x[self.idx_endo[variable]],index=self.db[variable].index,name=variable) if (pyDbs.type_(self.db[variable])=='variable') else x[self.idx_endo[variable]] if (pyDbs.type_(self.db[variable])=='scalar') else None
+		else:
+			return self.db[variable]
+
+	###########################################
+	# Model equations
+	###########################################
+
+
+	###########################################
+	# Define solvers
+	###########################################
+
 
 ###########################################
-# Model equations
-###########################################	
-
-	def Supply(self,x):
-		""" Optimal capacity utilization """
-		Inner = pd.Series(0,index=self.id2h).add(self.xArray2pdSeries(x,variable='p')).sub(self.averageMC).div(self.db['sigma'])
-		return np.nan
-
-	def ExcessDemand(self,x):
-		""" Equilibrium definition defined as excess demand"""
-		return np.nan
-
-
-###########################################
-# Define solver
+# NEW CLASS
 ###########################################
 
-	def ScipySolver(self,x0=None):
-		""" A wrapper around Scipy's fsolve function"""
-		if x0 is None:
-			x0 = self.db['p'].values
-		return fsolve(lambda x: self.ExcessDemand, x0=x0)
+class mEstimateNL(mSimpleNL):
+	""" A class for estimating a non-linear energy system model"""
+	def __init__(self, db):
+		super().__init__(db)
+		self.theta_vars = ['sigma_E','OtherMC']
+		self.endo_vars = {
+			'endo_var':['p'],
+			'theta_var':self.theta_vars.copy()
+		}
+		self.idx_endo = {
+			'p': range(0,len(self.db['h'])),
+			'sigma_E':len(self.db['h']),
+			'OtherMC': range(len(self.db['h']) + 1 , len(self.db['h']) + len(self.db['OtherMC']) + 1)
+		}
 
-	# def Solve(self,x0=None,solver='scipy',analyticalJacobian=False,n_iter=None,update_db=True):
-	# 	""" Function for finding equilibrium prices using the excess demand function """
-	# 	# Check an equilibrium always exists:
-	# 	if (pyDbs.pdSum(self.db['LoadVariation'] * self.db['Load'],'c')-pyDbs.pdSum(self.hourlyGeneratingCapacity,'id')>0).any():
-	# 	 	warnings.warn(r'You are missing '+str((pyDbs.pdSum(self.db['LoadVariation'] * self.db['Load'],'c')-pyDbs.pdSum(self.hourlyGeneratingCapacity,'id')).round(1).max())+'in generating capacity for an equilibrium to exist', UserErrorMessage)
-	# 	# Update parameters:
-	# 	self.x = x0.copy()
-	# 	n_iter = 100*(len(x0)+1) if n_iter is None else n_iter
-	# 	# Now solve for the equilibrium:
-	# 	if solver=='scipy':
-	# 		fprime = self.Jacobian_of_ExcessDemand if analyticalJacobian else None
-	# 		roots = fsolve(lambda x: self.NonLinearSystem(x), x0=x0, fprime=fprime, maxfev = n_iter)
-	# 	elif solver=='manual':
-	# 		roots =  self.manualSolver(x0=x0,n_iter=n_iter)
-	# 	else:
-	# 		warnings.warn(r'Currently, it is only possible to choose [scipy] or a [manual](ly) defined solver.', UserErrorMessage)
-	# 	if np.isclose(self.NonLinearSystem(roots),b=0).all():
-	# 		self.x = roots
-	# 		self.unloadSolutionToDB(roots)
-	# 		if update_db:
-	# 			self.postSolve()
-	# 	else:
-	# 		warnings.warn(r'Solver did not find an equilibrium.', UserErrorMessage)
+	###########################################
+	# Model equations
+	###########################################
+	
+	###########################################
+	# Define estimators
+	###########################################
+
+
+
