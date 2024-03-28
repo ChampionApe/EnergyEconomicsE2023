@@ -115,6 +115,7 @@ class mSimple(modelShell):
 	@property
 	def b_eq(self):
 		return [{'constrName': 'equilibrium'}]
+	
 	@property
 	def A_eq(self):
 		return [{'constrName': 'equilibrium', 'varName': 'Generation', 'value': appIndexWithCopySeries(pd.Series(1, index = self.globalDomains['Generation']), ['g','h'],['g_constr','h_constr'])},

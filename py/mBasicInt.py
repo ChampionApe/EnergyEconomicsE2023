@@ -93,15 +93,20 @@ class mSimple(modelShell):
 
 	@property
 	def c(self):
-		return [{'varName': 'Generation', 'value': adjMultiIndex.bc(self.db['mc'], self.db['h'])},
+		return [{'varName': 'Generation', 'value': adjMultiIndex.bc(self.db['mc'], self.globalDomains['Generation'])},
 				{'varName': 'HourlyDemand', 'value': -adjMultiIndex.bc(self.db['MWP'], self.globalDomains['HourlyDemand'])}]
 	@property
 	def u(self):
 		return [{'varName': 'Generation', 'value': self.hourlyGeneratingCapacity},
 				{'varName': 'HourlyDemand', 'value': self.hourlyLoad_c}]
 	@property
+	def l(self):
+		return [{'varName':'Generation','value':0.1*self.hourlyGeneratingCapacity}]
+
+	@property
 	def b_eq(self):
 		return [{'constrName': 'equilibrium'}]
+	
 	@property
 	def A_eq(self):
 		return [{'constrName': 'equilibrium', 'varName': 'Generation', 'value': appIndexWithCopySeries(pd.Series(1, index = self.globalDomains['Generation']), 'h','h_constr')},
